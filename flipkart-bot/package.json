@@ -1,0 +1,15 @@
+{
+  "name": "flipkart-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "login": "node src/login.js",
+    "watch": "node src/watch.js",
+    "test-checkout": "DRY_RUN=true FORCE_BUY=true node src/watch.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "playwright": "^1.48.0"
+  }
+}
