@@ -6,6 +6,7 @@
   "scripts": {
     "login": "node src/login.js",
     "watch": "node src/watch.js",
+    "check": "CHECK_ONLY=true node src/watch.js",
     "test-checkout": "DRY_RUN=true FORCE_BUY=true node src/watch.js",
     "test": "bash test/run-all.sh"
   },

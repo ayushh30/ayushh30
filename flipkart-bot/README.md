@@ -11,6 +11,7 @@ cd flipkart-bot
 npm install && npx playwright install chromium
 cp .env.example .env        # product link + ₹4000 limit are pre-filled; add card details
 npm run login               # log in once with your mobile + OTP, set default address
+npm run check               # read-only: shows colour + which sizes are in stock right now
 npm run test-checkout       # DRY RUN: goes all the way to the card form, stops before Pay
 # check shots/*.png, then set DRY_RUN=false in .env
 npm run watch               # leave running; beeps and asks for OTP when it buys
@@ -25,6 +26,12 @@ npm run watch               # leave running; beeps and asks for OTP when it buys
 - `DRY_RUN=true` by default.
 - Only `SIZES` (8.5, 9) are ever selected, in that order.
 - Card details live only in `.env` (git-ignored). They're never logged or sent anywhere except the Flipkart form.
+
+## Checked against the real Flipkart page (Oct 2026, logged out)
+- Colour read from "Selected Color:" → `WHITE 0SG` ✔
+- Sizes: each is its own link/pid; sold-out sizes have a dashed border. 8.5 and 9 correctly read as sold out ✔
+- "Buy at ₹…" button and the ICICI offer's "Apply" button are found ✔
+- Not yet verified (needs a logged-in account): address, payment page, card fields, OTP screen.
 
 ## Tests
 `npm test` runs the real bot against a local fake Flipkart checkout (no internet, no real card):

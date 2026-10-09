@@ -12,9 +12,9 @@ run() { # name scenario dryrun answers timeout_ms expected-events
   local got; got=$(curl -s 127.0.0.1:$port/events); kill $sp 2>/dev/null
   if [ "$got" = "$6" ]; then echo "PASS $1"; else echo "FAIL $1: expected $6 got $got"; tail -5 $T/$1.log; fail=1; fi
 }
-run discount-ok-buys-size-9   ok         false "123456"       40000 '["buy-now","deliver","continue","PAY-CLICKED","otp=123456"]'
-run no-discount-holds         nodiscount false ""             15000 '["buy-now","deliver","continue"]'
-run no-discount-user-says-pay nodiscount false ",PAY,654321"  40000 '["buy-now","deliver","continue","PAY-CLICKED","otp=654321"]'
-run dry-run-never-pays        ok         true  ""             20000 '["buy-now","deliver","continue"]'
+run discount-ok-buys-size-9   ok         false "123456"       40000 '["offer-apply","buy-now:?pid=P9","deliver","continue","PAY-CLICKED","otp=123456"]'
+run no-discount-holds         nodiscount false ""             15000 '["offer-apply","buy-now:?pid=P9","deliver","continue"]'
+run no-discount-user-says-pay nodiscount false ",PAY,654321"  40000 '["offer-apply","buy-now:?pid=P9","deliver","continue","PAY-CLICKED","otp=654321"]'
+run dry-run-never-pays        ok         true  ""             20000 '["offer-apply","buy-now:?pid=P9","deliver","continue"]'
 run never-restocks-never-buys never      false ""             10000 '[]'
 rm -rf "$T"; exit $fail

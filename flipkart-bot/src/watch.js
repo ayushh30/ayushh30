@@ -8,9 +8,9 @@ const log = (...a) => console.log(new Date().toLocaleTimeString(), ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const bell = () => process.stdout.write("\x07\x07\x07");
 
-let ctx, page;
+let ctx, page, stopping = false;
 // Ctrl+C / kill must really stop the bot (otherwise the crash-restart below would revive the browser)
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { log("stopping"); ctx?.close().finally(() => process.exit(0)); setTimeout(() => process.exit(0), 3000); });
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { stopping = true; log("stopping"); ctx?.close().finally(() => process.exit(0)); setTimeout(() => process.exit(0), 3000); });
 async function openBrowser() {
   await ctx?.close().catch(() => {});
   ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
@@ -27,37 +27,53 @@ async function openBrowser() {
 await openBrowser();
 const shot = (name) => page.screenshot({ path: `shots/${Date.now()}-${name}.png` }).catch(() => {});
 
-const textBtn = (re) => page.getByRole("button", { name: re }).or(page.locator("button, a, div[role=button]").filter({ hasText: re })).first();
+// Flipkart's buttons are often plain <div>s with no role, so match the visible text itself
+const textBtn = (re) => page.getByRole("button", { name: re }).or(page.getByText(re)).filter({ visible: true }).first();
+// Flipkart's button reads "Buy at ₹5,039" (older layouts: "BUY NOW")
+const BUY_RE = /^\s*(buy now|buy at\s*₹\s*[\d,]+)\s*$/i;
 
-// A size chip is out of stock if it, or the li/div wrapping it, is marked disabled, struck through or greyed out
-const looksUnavailable = (chip) =>
-  chip.evaluate((el) => {
-    for (let n = el, i = 0; n && i < 4; n = n.parentElement, i++) {
-      const cs = getComputedStyle(n);
-      if (/disabled|unavailable|oos|sold/i.test(n.className || "") || n.getAttribute("aria-disabled") === "true" ||
-          n.hasAttribute("disabled") || cs.textDecorationLine.includes("line-through") ||
-          cs.pointerEvents === "none" || Number(cs.opacity) < 0.6) return true;
+// Reads the page in one pass: selected colour + every size link.
+// On Flipkart each size is an <a href="...pid=..."> and a sold-out size has a dashed border / strike-through.
+const readSizes = () =>
+  page.evaluate(() => {
+    const leaves = [...document.querySelectorAll("body *")].filter((e) => !e.children.length);
+    const colorLabel = leaves.find((e) => /^selected colou?r:?$/i.test(e.textContent.trim()));
+    const color = colorLabel ? colorLabel.parentElement.innerText.replace(/selected colou?r:?/i, "").trim() : null;
+    const sizes = {};
+    for (const leaf of leaves) {
+      const m = leaf.textContent.trim().match(/^(?:UK\s*)?(\d{1,2}(?:\.5)?)$/i);
+      const link = m && leaf.closest("a[href]");
+      // size links point at the same product page (same /p/itm... path), just a different pid
+      if (!link || sizes[m[1]] || new URL(link.href).pathname !== location.pathname) continue;
+      const parts = [link, ...link.querySelectorAll("*")];
+      for (let n = link.parentElement, i = 0; n && i < 2; n = n.parentElement, i++) parts.push(n);
+      const soldOut = parts.some((n) => {
+        const cs = getComputedStyle(n);
+        return cs.borderStyle.includes("dashed") || cs.textDecorationLine.includes("line-through") ||
+          n.getAttribute("aria-disabled") === "true" || /disabled|unavailable|sold/i.test(String(n.className));
+      });
+      sizes[m[1]] = { available: !soldOut, href: link.href };
     }
-    return false;
+    return { color, sizes };
   });
 
 // --- 1. stock check: returns the size that is buyable, or null -------------
 async function findBuyableSize() {
-  const body = (await page.locator("body").innerText()).toUpperCase();
-  if (!body.includes(cfg.requireText.toUpperCase())) {
-    log(`page does not mention ${cfg.requireText} - wrong variant URL? (blocked/captcha?)`);
+  const { color, sizes } = await readSizes();
+  if (!color || !color.toUpperCase().includes(cfg.requireText.toUpperCase())) {
+    log(`selected colour is "${color}", not ${cfg.requireText} - wrong URL, or a captcha/block page`);
     await shot("variant-check");
     return null;
   }
   for (const size of cfg.sizes) {
-    // Size chips are links/list items whose full text is the size, e.g. "8.5" or "UK 8.5"
-    const chip = page.locator("li, a, div").filter({ hasText: new RegExp(`^\\s*(UK\\s*)?${size.replace(".", "\\.")}\\s*$`, "i") }).last();
-    if (!(await chip.count())) continue;
-    if (await looksUnavailable(chip)) continue;
-    await chip.click({ timeout: 1500 }).catch(() => {});
-    const body2 = (await page.locator("body").innerText()).toLowerCase();
-    if (/sold out|currently unavailable|out of stock/.test(body2)) continue;
-    if (await page.getByText(/^\s*buy now\s*$/i).first().isEnabled().catch(() => false)) return size;
+    const s = sizes[size];
+    if (!s?.available) continue;
+    // Each size has its own pid: open that size's page so it is the one selected
+    if (!page.url().includes(new URL(s.href).searchParams.get("pid"))) {
+      await page.goto(s.href, { waitUntil: "domcontentloaded" });
+      await page.getByText(BUY_RE).first().waitFor({ timeout: 8000 }).catch(() => {});
+    }
+    if (await page.getByText(BUY_RE).first().isVisible().catch(() => false)) return size;
   }
   return null;
 }
@@ -90,7 +106,10 @@ async function ask(q) {
 // --- 2. checkout ----------------------------------------------------------
 async function checkout(size) {
   log(`BUYING size ${size}`);
-  await textBtn(/^\s*buy now\s*$/i).click();
+  // ICICI bank offer can be applied right on the product page
+  const iciciApply = page.locator("div").filter({ hasText: new RegExp(cfg.offerText, "i") }).filter({ hasText: /^[\s\S]{0,120}$/ }).getByText(/^\s*apply\s*$/i).first();
+  if (await iciciApply.isVisible().catch(() => false)) { await iciciApply.click().catch(() => {}); log(`clicked Apply on ${cfg.offerText} offer`); await page.waitForTimeout(1500); }
+  await textBtn(BUY_RE).click();
   await page.waitForLoadState("domcontentloaded");
   await shot("after-buy-now");
 
@@ -168,6 +187,16 @@ async function handleOtp() {
 
 // --- main loop ------------------------------------------------------------
 log(`watching ${cfg.url}\nsizes ${cfg.sizes} | variant "${cfg.requireText}" | max final ₹${cfg.maxPrice} | dryRun=${cfg.dryRun}`);
+if (process.env.CHECK_ONLY === "true") {
+  await page.goto(cfg.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+  await page.waitForTimeout(3000);
+  const { color, sizes } = await readSizes();
+  log(`colour: ${color}`);
+  log("in stock:", Object.entries(sizes).filter(([, v]) => v.available).map(([k]) => k).join(", ") || "none");
+  log("sold out:", Object.entries(sizes).filter(([, v]) => !v.available).map(([k]) => k).join(", ") || "none");
+  await shot("check-only");
+  await ctx.close(); process.exit(0);
+}
 let n = 0;
 for (;;) {
   try {
@@ -182,6 +211,7 @@ for (;;) {
     if (++n % 15 === 1) log(`still out of stock (check #${n})`);
   } catch (e) {
     log("error:", e.message.split("\n")[0]);
+    if (stopping) break;
     if (/has been closed|crashed|Target closed/i.test(e.message)) { log("browser died - restarting it"); await openBrowser().catch((e2) => log("restart failed:", e2.message)); }
     else await shot("error");
   }

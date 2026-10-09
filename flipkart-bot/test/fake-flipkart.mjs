@@ -6,12 +6,17 @@ let loads = 0;
 const events = [];
 const page = (b) => `<!doctype html><html><body>${b}<script>
 const log=(e)=>fetch('/log?e='+encodeURIComponent(e));</script></body></html>`;
-const product = () => {
+// Mirrors the real Flipkart layout (checked Oct 2026): each size is a link with its own pid, sold-out sizes have a
+// dashed border, other colour swatches carry "Out of stock" labels, buy button reads "Buy at ₹...".
+const product = (pid) => {
   const inStock = ++loads >= 3 && SC !== "never";
-  const li = (s, ok) => `<li class="${ok ? "" : "disabled"}"><a href="#">${s}</a></li>`;
-  return page(`<h1>New Balance 530 Sneakers For Men</h1><div>Color: White 0SG</div><div>₹4,299</div>
-  <ul>${li("8", true)}${li("8.5", false)}${li("9", inStock)}${li("10", true)}</ul>
-  <button ${inStock ? "" : "disabled"} onclick="log('buy-now');location='/addr'">BUY NOW</button>`);
+  const size = (s, ok) => `<a href="/p?pid=P${s}"><div style="border:1px ${ok ? "solid" : "dashed"} #999"><div>${s}</div></div></a>`;
+  return page(`<h1>New Balance 530 Sneakers For Men</h1>
+  <div><div>Selected Color:</div> WHITE 0SG</div>
+  <a href="/other">Grey</a><div>Out of stock</div><a href="/other2">Navy</a><div>Out of stock</div>
+  <div>Select Size</div>${size("8", true)}${size("8.5", false)}${size("9", inStock)}${size("10", true)}
+  <div>₹4,299</div><div>ICICI Credit Card ₹800 off <span onclick="log('offer-apply')">Apply</span></div>
+  ${inStock || pid === "P8" ? `<div onclick="log('buy-now:'+location.search);location='/addr'">Buy at ₹4,299</div>` : ""}`);
 };
 const routes = {
   "/addr": page(`<button onclick="log('deliver');location='/summary'">Deliver Here</button>`),
@@ -30,5 +35,5 @@ http.createServer((req, res) => {
   if (u.pathname === "/log") { events.push(u.searchParams.get("e")); console.log("EVENT", u.searchParams.get("e")); return res.end(); }
   if (u.pathname === "/events") return res.end(JSON.stringify(events));
   res.setHeader("content-type", "text/html; charset=utf-8");
-  res.end(u.pathname === "/p" ? product() : routes[u.pathname] || "404");
+  res.end(u.pathname === "/p" ? product(u.searchParams.get("pid")) : routes[u.pathname] || "404");
 }).listen(Number(process.env.PORT), () => console.log("mock up", SC));
