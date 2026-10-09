@@ -43,13 +43,29 @@ async function findBuyableSize() {
   return null;
 }
 
-async function priceOk() {
-  if (!cfg.maxPrice) return true;
+const rupees = (str) => Number(str.replace(/[^\d.]/g, ""));
+
+// Final amount on the payment page (after bank offer + platform fee).
+// Flipkart labels it "Total Amount" / "Amount Payable"; the last one on the page is the post-discount figure.
+async function readPayable() {
   const txt = await page.locator("body").innerText();
-  const prices = [...txt.matchAll(/₹\s?([\d,]+)/g)].map((m) => Number(m[1].replace(/,/g, "")));
-  const main = prices.find((p) => p > 1000); // first sizeable price on the page
-  log(`price seen: ₹${main}`);
-  return !main || main <= cfg.maxPrice;
+  const hits = [...txt.matchAll(/(total amount|amount payable|total payable|you pay|pay)\s*[:\n]?\s*₹\s?([\d,]+(?:\.\d+)?)/gi)];
+  return hits.length ? rupees(hits.at(-1)[2]) : null;
+}
+
+// Did Flipkart actually take off the ICICI discount? Look for a negative bank-offer line.
+async function readOfferDiscount() {
+  const txt = await page.locator("body").innerText();
+  const m = txt.match(new RegExp(`(${cfg.offerText}|bank offer|instant discount)[^₹]{0,80}[-−]\\s?₹\\s?([\\d,]+)`, "i"))
+    || txt.match(/(bank offer|instant discount|offer discount)[^₹]{0,40}₹\s?([\d,]+)/i);
+  return m ? rupees(m[2]) : 0;
+}
+
+async function ask(q) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const a = (await rl.question(q)).trim().toLowerCase();
+  rl.close();
+  return a;
 }
 
 // --- 2. checkout ----------------------------------------------------------
@@ -83,13 +99,37 @@ async function checkout(size) {
   await fill('input[placeholder*="YY" i], input[name*="year" i]', cfg.card.yy);
   await fill('input[placeholder*="CVV" i], input[name*="cvv" i]', cfg.card.cvv);
 
-  // Verify the ICICI offer is actually applied before paying
-  const offerBody = await page.locator("body").innerText();
-  const applied = new RegExp(cfg.offerText, "i").test(offerBody) && /(applied|discount|off)/i.test(offerBody);
-  log(applied ? `offer "${cfg.offerText}" visible` : `WARNING: offer "${cfg.offerText}" not detected - check screenshot`);
-  await shot("card-filled");
+  // If an ICICI offer has its own "Apply" button, press it (otherwise Flipkart auto-applies from the card number)
+  const offerApply = page.locator("div, li").filter({ hasText: new RegExp(cfg.offerText, "i") }).getByText(/^\s*apply\s*$/i).first();
+  if (await offerApply.isVisible().catch(() => false)) await offerApply.click().catch(() => {});
+  await page.waitForTimeout(2500); // let Flipkart recalculate the total
 
-  if (cfg.dryRun) { log("DRY_RUN: stopping before Pay. See shots/."); return false; }
+  // Price guard: limit applies to the FINAL amount, card discount + fees included
+  for (;;) {
+    const payable = await readPayable();
+    const discount = await readOfferDiscount();
+    await shot("card-filled");
+    log(`payable: ₹${payable ?? "?"} | card discount: ₹${discount || 0} | limit: ₹${cfg.maxPrice}`);
+
+    const problems = [];
+    if (!discount) problems.push(`${cfg.offerText} card discount NOT applied`);
+    if (payable == null) problems.push("could not read the final amount");
+    else if (cfg.maxPrice && payable > cfg.maxPrice) problems.push(`total ₹${payable} is above your ₹${cfg.maxPrice} limit`);
+
+    if (!problems.length) break;
+    // Hold the order open (don't cancel) and wait for the human
+    bell();
+    console.log(`\n!!! ORDER ON HOLD - NOT PAID, NOT CANCELLED !!!\n  - ${problems.join("\n  - ")}`);
+    console.log("  The checkout is still open in the browser. You can fix it there (e.g. apply the offer).");
+    const a = await ask(">>> Press Enter to re-check, or type PAY to pay this amount anyway: ");
+    if (a === "pay") { log("you approved paying anyway"); break; }
+  }
+
+  if (cfg.dryRun) {
+    log("DRY_RUN: stopping before Pay. See shots/.");
+    await ask("Press Enter to close the browser.");
+    return false;
+  }
   await textBtn(/^\s*(pay|make payment)\b/i).click();
   return true;
 }
@@ -98,9 +138,7 @@ async function checkout(size) {
 async function handleOtp() {
   await page.waitForSelector('input[autocomplete="one-time-code"], input[name*="otp" i], input[placeholder*="OTP" i]', { timeout: 60000 }).catch(() => {});
   bell(); await shot("otp");
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const otp = (await rl.question("\n>>> Enter the OTP from your bank: ")).trim();
-  rl.close();
+  const otp = await ask("\n>>> Enter the OTP from your bank: ");
   const box = page.locator('input[autocomplete="one-time-code"], input[name*="otp" i], input[placeholder*="OTP" i], input[type="tel"], input[type="text"]').first();
   await box.fill(otp);
   await textBtn(/submit|confirm|verify|proceed/i).click().catch(() => page.keyboard.press("Enter"));
@@ -110,13 +148,13 @@ async function handleOtp() {
 }
 
 // --- main loop ------------------------------------------------------------
-log(`watching ${cfg.url}\nsizes ${cfg.sizes} | variant "${cfg.requireText}" | dryRun=${cfg.dryRun}`);
+log(`watching ${cfg.url}\nsizes ${cfg.sizes} | variant "${cfg.requireText}" | max final ₹${cfg.maxPrice} | dryRun=${cfg.dryRun}`);
 let n = 0;
 for (;;) {
   try {
     await page.goto(cfg.url, { waitUntil: "domcontentloaded", timeout: 20000 });
     const size = cfg.forceBuy ? cfg.sizes[0] : await findBuyableSize();
-    if (size && (await priceOk())) {
+    if (size) {
       if (cfg.forceBuy) await findBuyableSize();
       const paid = await checkout(size);
       if (paid) await handleOtp();
