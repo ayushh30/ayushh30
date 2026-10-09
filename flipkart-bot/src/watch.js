@@ -8,18 +8,38 @@ const log = (...a) => console.log(new Date().toLocaleTimeString(), ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const bell = () => process.stdout.write("\x07\x07\x07");
 
-const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-  headless: cfg.headless,
-  viewport: { width: 1280, height: 900 },
-});
-// Skip images/fonts/media for speed
-await ctx.route("**/*", (route) =>
-  ["image", "font", "media"].includes(route.request().resourceType()) ? route.abort() : route.continue(),
-);
-const page = ctx.pages()[0] ?? (await ctx.newPage());
+let ctx, page;
+// Ctrl+C / kill must really stop the bot (otherwise the crash-restart below would revive the browser)
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { log("stopping"); ctx?.close().finally(() => process.exit(0)); setTimeout(() => process.exit(0), 3000); });
+async function openBrowser() {
+  await ctx?.close().catch(() => {});
+  ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
+    headless: cfg.headless,
+    executablePath: cfg.chromePath,
+    viewport: { width: 1280, height: 900 },
+  });
+  // Skip images/fonts/media for speed
+  await ctx.route("**/*", (route) =>
+    ["image", "font", "media"].includes(route.request().resourceType()) ? route.abort() : route.continue(),
+  );
+  page = ctx.pages()[0] ?? (await ctx.newPage());
+}
+await openBrowser();
 const shot = (name) => page.screenshot({ path: `shots/${Date.now()}-${name}.png` }).catch(() => {});
 
 const textBtn = (re) => page.getByRole("button", { name: re }).or(page.locator("button, a, div[role=button]").filter({ hasText: re })).first();
+
+// A size chip is out of stock if it, or the li/div wrapping it, is marked disabled, struck through or greyed out
+const looksUnavailable = (chip) =>
+  chip.evaluate((el) => {
+    for (let n = el, i = 0; n && i < 4; n = n.parentElement, i++) {
+      const cs = getComputedStyle(n);
+      if (/disabled|unavailable|oos|sold/i.test(n.className || "") || n.getAttribute("aria-disabled") === "true" ||
+          n.hasAttribute("disabled") || cs.textDecorationLine.includes("line-through") ||
+          cs.pointerEvents === "none" || Number(cs.opacity) < 0.6) return true;
+    }
+    return false;
+  });
 
 // --- 1. stock check: returns the size that is buyable, or null -------------
 async function findBuyableSize() {
@@ -33,8 +53,7 @@ async function findBuyableSize() {
     // Size chips are links/list items whose full text is the size, e.g. "8.5" or "UK 8.5"
     const chip = page.locator("li, a, div").filter({ hasText: new RegExp(`^\\s*(UK\\s*)?${size.replace(".", "\\.")}\\s*$`, "i") }).last();
     if (!(await chip.count())) continue;
-    const cls = (await chip.getAttribute("class")) || "";
-    if (/disabled|unavailable|oos/i.test(cls) || (await chip.getAttribute("aria-disabled")) === "true") continue;
+    if (await looksUnavailable(chip)) continue;
     await chip.click({ timeout: 1500 }).catch(() => {});
     const body2 = (await page.locator("body").innerText()).toLowerCase();
     if (/sold out|currently unavailable|out of stock/.test(body2)) continue;
@@ -114,7 +133,7 @@ async function checkout(size) {
     const problems = [];
     if (!discount) problems.push(`${cfg.offerText} card discount NOT applied`);
     if (payable == null) problems.push("could not read the final amount");
-    else if (cfg.maxPrice && payable > cfg.maxPrice) problems.push(`total ₹${payable} is above your ₹${cfg.maxPrice} limit`);
+    else if (payable > cfg.maxPrice) problems.push(`total ₹${payable} is above your ₹${cfg.maxPrice} limit`);
 
     if (!problems.length) break;
     // Hold the order open (don't cancel) and wait for the human
@@ -163,7 +182,8 @@ for (;;) {
     if (++n % 15 === 1) log(`still out of stock (check #${n})`);
   } catch (e) {
     log("error:", e.message.split("\n")[0]);
-    await shot("error");
+    if (/has been closed|crashed|Target closed/i.test(e.message)) { log("browser died - restarting it"); await openBrowser().catch((e2) => log("restart failed:", e2.message)); }
+    else await shot("error");
   }
   await sleep(cfg.pollMs + Math.random() * cfg.jitterMs);
 }

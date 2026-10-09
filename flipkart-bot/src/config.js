@@ -10,12 +10,13 @@ export const cfg = {
   url: need("PRODUCT_URL"),
   requireText: process.env.REQUIRE_TEXT || "0SG",
   sizes: (process.env.SIZES || "8.5,9").split(",").map((s) => s.trim()),
-  maxPrice: Number(process.env.MAX_PRICE || 0),
+  maxPrice: Number(need("MAX_PRICE")), // required: no silent "no limit"
   pollMs: Number(process.env.POLL_SECONDS || 4) * 1000,
   jitterMs: Number(process.env.POLL_JITTER || 2) * 1000,
   offerText: process.env.OFFER_TEXT || "ICICI",
   dryRun: process.env.DRY_RUN !== "false",
   headless: process.env.HEADLESS === "true",
+  chromePath: process.env.CHROME_PATH || undefined, // optional: use an existing Chrome/Chromium binary
   forceBuy: process.env.FORCE_BUY === "true", // test mode: skip waiting for stock
   card: {
     number: process.env.CARD_NUMBER,
@@ -25,4 +26,4 @@ export const cfg = {
   },
 };
 
-export const PROFILE_DIR = new URL("../profile", import.meta.url).pathname;
+export const PROFILE_DIR = process.env.PROFILE_DIR || new URL("../profile", import.meta.url).pathname;

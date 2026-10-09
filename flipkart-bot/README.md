@@ -26,8 +26,21 @@ npm run watch               # leave running; beeps and asks for OTP when it buys
 - Only `SIZES` (8.5, 9) are ever selected, in that order.
 - Card details live only in `.env` (git-ignored). They're never logged or sent anywhere except the Flipkart form.
 
+## Tests
+`npm test` runs the real bot against a local fake Flipkart checkout (no internet, no real card):
+
+| Scenario | Expected |
+|---|---|
+| 8.5 sold out, 9 restocks, ICICI discount applies (₹3,506) | buys **9**, pays, asks for OTP |
+| discount missing (₹4,306) | **holds**: never pays, never cancels |
+| discount missing, you type `PAY` | pays, asks for OTP |
+| `DRY_RUN=true` | stops before Pay |
+| neither size ever restocks | keeps watching, never buys |
+
+The bot also restarts Chrome if it crashes, and Ctrl+C stops it cleanly.
+
 ## Caveats
-- I couldn't test this against live Flipkart (it isn't reachable from the build environment). The selectors are
-  text-based guesses, so **do the dry run first**. If a step fails, the screenshot in `shots/` shows where.
+- The tests use a *fake* checkout. The real Flipkart pages weren't reachable from the build environment, so the
+  button/field matching is text-based guesswork until you've done one dry run on the real site. If a step fails, the screenshot in `shots/` shows where.
 - Flipkart may show a captcha or log you out. If it does, re-run `npm run login`.
 - Polling every ~4–6s is fast but polite; going much faster risks getting blocked.
