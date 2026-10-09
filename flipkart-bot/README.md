@@ -31,7 +31,11 @@ npm run watch               # leave running; beeps and asks for OTP when it buys
 - Colour read from "Selected Color:" → `WHITE 0SG` ✔
 - Sizes: each is its own link/pid; sold-out sizes have a dashed border. 8.5 and 9 correctly read as sold out ✔
 - "Buy at ₹…" button and the ICICI offer's "Apply" button are found ✔
-- Not yet verified (needs a logged-in account): address, payment page, card fields, OTP screen.
+- Logged in (dry run, Oct 2026): ICICI "Apply" opens a side panel with a second Apply ("card will be auto-selected
+  in the payments page") ✔. The bottom "Buy at ₹…" button animates its price, so it is found by position ✔.
+  Buy opens a "Select variant" panel listing in-stock sizes; the bot picks the size there and presses Continue
+  (written from screenshots, not yet confirmed live).
+- Not yet verified: address, payment page, card fields, OTP screen.
 
 ## Tests
 `npm test` runs the real bot against a local fake Flipkart checkout (no internet, no real card):

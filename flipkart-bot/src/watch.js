@@ -17,6 +17,8 @@ async function openBrowser() {
     headless: cfg.headless,
     executablePath: cfg.chromePath,
     viewport: { width: 1280, height: 900 },
+    // Behind a corporate/cloud proxy, Chrome must be told about it explicitly
+    ...(process.env.HTTPS_PROXY && { proxy: { server: process.env.HTTPS_PROXY, bypass: process.env.NO_PROXY || "localhost,127.0.0.1" } }),
   });
   // Skip images/fonts/media for speed
   await ctx.route("**/*", (route) =>
@@ -29,8 +31,27 @@ const shot = (name) => page.screenshot({ path: `shots/${Date.now()}-${name}.png`
 
 // Flipkart's buttons are often plain <div>s with no role, so match the visible text itself
 const textBtn = (re) => page.getByRole("button", { name: re }).or(page.getByText(re)).filter({ visible: true }).first();
-// Flipkart's button reads "Buy at ₹5,039" (older layouts: "BUY NOW")
-const BUY_RE = /^\s*(buy now|buy at\s*₹\s*[\d,]+)\s*$/i;
+// The real buy button sits in the bottom bar and animates its price like a rolling counter, so its text is
+// "Buy at ₹0123456789,..." and won't match exactly. Tag the lowest on-screen element starting with "Buy at ₹" / "Buy now".
+const tagBuyButton = () =>
+  page.evaluate(() => {
+    document.querySelectorAll('[data-bot="buy"]').forEach((e) => e.removeAttribute("data-bot"));
+    let best = null, bestY = -1, bestArea = 0;
+    for (const el of document.querySelectorAll("body *")) {
+      const t = el.textContent.replace(/\s+/g, "");
+      if (!/^(buyat₹|buynow)/i.test(t) || t.length > 80) continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      const area = r.width * r.height;
+      if (r.y > bestY + 5 || (Math.abs(r.y - bestY) <= 5 && area > bestArea)) { best = el; bestY = r.y; bestArea = area; }
+    }
+    if (best) best.setAttribute("data-bot", "buy");
+    return !!best;
+  });
+async function clickBuy() {
+  if (!(await tagBuyButton())) throw new Error("buy button not found");
+  await page.locator('[data-bot="buy"]').click();
+}
 
 // Reads the page in one pass: selected colour + every size link.
 // On Flipkart each size is an <a href="...pid=..."> and a sold-out size has a dashed border / strike-through.
@@ -71,9 +92,9 @@ async function findBuyableSize() {
     // Each size has its own pid: open that size's page so it is the one selected
     if (!page.url().includes(new URL(s.href).searchParams.get("pid"))) {
       await page.goto(s.href, { waitUntil: "domcontentloaded" });
-      await page.getByText(BUY_RE).first().waitFor({ timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(1500);
     }
-    if (await page.getByText(BUY_RE).first().isVisible().catch(() => false)) return size;
+    if (await tagBuyButton()) return size;
   }
   return null;
 }
@@ -106,10 +127,57 @@ async function ask(q) {
 // --- 2. checkout ----------------------------------------------------------
 async function checkout(size) {
   log(`BUYING size ${size}`);
-  // ICICI bank offer can be applied right on the product page
-  const iciciApply = page.locator("div").filter({ hasText: new RegExp(cfg.offerText, "i") }).filter({ hasText: /^[\s\S]{0,120}$/ }).getByText(/^\s*apply\s*$/i).first();
-  if (await iciciApply.isVisible().catch(() => false)) { await iciciApply.click().catch(() => {}); log(`clicked Apply on ${cfg.offerText} offer`); await page.waitForTimeout(1500); }
-  await textBtn(BUY_RE).click();
+  // ICICI bank offer: the small "Apply" on the offer card opens a side panel with a big "Apply" button
+  const applyBtns = () => page.getByText(/^\s*apply\s*$/i).filter({ visible: true });
+  await page.getByText(/^\s*apply\s*$/i).first().waitFor({ timeout: 6000 }).catch(() => {});
+  // find the "Apply" inside the small offer card that mentions ICICI, and tag it so we can click it
+  const tagged = await page.evaluate((offer) => {
+    const re = new RegExp(offer, "i");
+    for (const el of document.querySelectorAll("body *")) {
+      if (el.children.length || el.textContent.trim().toLowerCase() !== "apply" || !el.getClientRects().length) continue;
+      for (let n = el.parentElement, i = 0; n && i < 5; n = n.parentElement, i++)
+        if (n.innerText.length < 200 && re.test(n.innerText)) { el.setAttribute("data-bot", "offer-apply"); return true; }
+    }
+    return false;
+  }, cfg.offerText);
+  const iciciApply = page.locator('[data-bot="offer-apply"]').first();
+  if (!tagged) log(`no "${cfg.offerText}" offer Apply button on product page`);
+  if (await iciciApply.isVisible().catch(() => false)) {
+    await iciciApply.click().catch(() => {});
+    await page.waitForTimeout(1200);
+    const panel = page.getByText(/auto-selected in the payments page/i).first();
+    if (await panel.isVisible().catch(() => false)) {
+      await applyBtns().last().click().catch(() => {}); // the panel's Apply (rendered last)
+      await panel.waitFor({ state: "hidden", timeout: 5000 }).catch(() => page.keyboard.press("Escape"));
+    }
+    log(`applied ${cfg.offerText} offer`);
+    await page.waitForTimeout(1500);
+  }
+  await shot("offer-applied");
+  await clickBuy();
+  // Flipkart may open a "Select variant" panel listing only in-stock sizes: pick ours, then Continue
+  const variantPanel = page.getByText(/^\s*select variant\s*$/i).first();
+  if (await variantPanel.waitFor({ timeout: 3000 }).then(() => true, () => false)) {
+    // Work inside the panel only (the product page behind it has its own "9.5" chip)
+    const found = await page.evaluate((size) => {
+      const title = [...document.querySelectorAll("body *")].find((e) => !e.children.length && /^select variant$/i.test(e.textContent.trim()));
+      let panel = title;
+      while (panel && !/continue/i.test(panel.innerText)) panel = panel.parentElement;
+      if (!panel) return "no panel";
+      const leaf = [...panel.querySelectorAll("*")].find((e) => !e.children.length && e.textContent.trim().replace(/^UK\s*/i, "") === size);
+      if (!leaf) return "size missing";
+      leaf.setAttribute("data-bot", "variant-size");
+      const cont = [...panel.querySelectorAll("*")].filter((e) => /^continue$/i.test(e.textContent.trim())).pop();
+      cont?.setAttribute("data-bot", "variant-continue");
+      return "ok";
+    }, size);
+    if (found !== "ok") throw new Error(`Select variant panel: ${found} for size ${size} (sold out again?)`);
+    await page.locator('[data-bot="variant-size"]').click();
+    await page.waitForTimeout(600);
+    await shot("variant-picked");
+    await page.locator('[data-bot="variant-continue"]').click({ timeout: 5000 });
+    log(`picked size ${size} in variant panel`);
+  }
   await page.waitForLoadState("domcontentloaded");
   await shot("after-buy-now");
 

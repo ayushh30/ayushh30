@@ -7,16 +7,27 @@ const events = [];
 const page = (b) => `<!doctype html><html><body>${b}<script>
 const log=(e)=>fetch('/log?e='+encodeURIComponent(e));</script></body></html>`;
 // Mirrors the real Flipkart layout (checked Oct 2026): each size is a link with its own pid, sold-out sizes have a
-// dashed border, other colour swatches carry "Out of stock" labels, buy button reads "Buy at ₹...".
+// dashed border, other colour swatches carry "Out of stock" labels. The ICICI "Apply" opens a side panel with a second
+// Apply. The real buy button animates its price (text is "Buy at ₹0123456789,..."); the offer banner also says
+// "Buy at ₹...". Clicking buy opens a "Select variant" panel whose Continue only works once a size is picked.
 const product = (pid) => {
   const inStock = ++loads >= 3 && SC !== "never";
   const size = (s, ok) => `<a href="/p?pid=P${s}"><div style="border:1px ${ok ? "solid" : "dashed"} #999"><div>${s}</div></div></a>`;
+  const roll = "0123456789,".repeat(3);
   return page(`<h1>New Balance 530 Sneakers For Men</h1>
   <div><div>Selected Color:</div> WHITE 0SG</div>
   <a href="/other">Grey</a><div>Out of stock</div><a href="/other2">Navy</a><div>Out of stock</div>
   <div>Select Size</div>${size("8", true)}${size("8.5", false)}${size("9", inStock)}${size("10", true)}
-  <div>₹4,299</div><div>ICICI Credit Card ₹800 off <span onclick="log('offer-apply')">Apply</span></div>
-  ${inStock || pid === "P8" ? `<div onclick="log('buy-now:'+location.search);location='/addr'">Buy at ₹4,299</div>` : ""}`);
+  <div>₹4,299</div>
+  <div>Buy at ₹3,499</div>
+  <div><div>₹800 off</div><div onclick="op.style.display='block'">Apply</div><div>ICICI</div></div>
+  <div id=op style="display:none;position:fixed;right:0;top:0;background:#fff">ICICI ₹800 off
+    <div>Card will be auto-selected in the payments page</div><div onclick="log('offer-apply');op.style.display='none'">Apply</div></div>
+  ${inStock || pid === "P8" ? `<div style="position:fixed;bottom:0;right:0;overflow:hidden;height:40px" onclick="vp.style.display='block'">
+     <div>Buy at ₹</div><div style="display:inline-block">${roll}</div></div>` : ""}
+  <div id=vp style="display:none;position:fixed;right:0;top:0;background:#fff;width:300px"><div>Select variant</div>
+    <div onclick="sel='8'">8</div><div onclick="sel='9'">9</div><div onclick="sel='10'">10</div>
+    <div onclick="if(window.sel){log('buy-now:size'+sel);location='/addr'}">Continue</div></div>`);
 };
 const routes = {
   "/addr": page(`<button onclick="log('deliver');location='/summary'">Deliver Here</button>`),
